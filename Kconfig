@@ -22,4 +22,103 @@ config BT_LBS_SECURITY_ENABLED
 	help
 	  "Enable BLE security for the LED-Button service"
 
+config EYE_BLE_STREAM_HZ
+	int "BLE stream rate (Hz)"
+	range 10 1000
+	default 100
+	help
+	  Sample rate in samples/second delivered to the BLE client (may be packed
+	  into fewer notifications).
+
+config EYE_BLE_PACKET_HZ
+	int "BLE notification packet rate (Hz)"
+	range 1 200
+	default 1
+	help
+	  Notification packets per second. Each packet carries multiple samples so
+	  that EYE_BLE_STREAM_HZ samples/s are delivered with lower notify rate.
+
+config EYE_ADC_SAMPLE_RATE_HZ
+	int "ADC sample rate (Hz)"
+	range 500 4000
+	default 1000
+	help
+	  ADC sampling rate used on the MCU. Must be a multiple of EYE_BLE_STREAM_HZ.
+
+config EYE_NOTCH_FREQ_HZ
+	int "Notch center frequency (Hz)"
+	range 50 60
+	default 50
+	help
+	  50 Hz or 60 Hz mains notch.
+
+config EYE_NOTCH_ENABLED
+	bool "Enable notch filter"
+	default y
+	help
+	  Enable/disable the MCU-side 2nd order IIR notch filter. Disabling keeps
+	  the code available but streams raw (unfiltered) samples.
+
+config EYE_NOTCH_Q
+	int "Notch Q (approx)"
+	range 20 35
+	default 30
+	help
+	  Notch filter Q. Coefficients are precomputed for Q=20/25/30/35 and the
+	  closest value is selected.
+
+config EYE_NOTCH_DOUBLE
+	bool "Apply notch twice (4th-order equivalent)"
+	default n
+	depends on EYE_NOTCH_ENABLED
+	help
+	  If enabled, run the notch filter twice (cascaded) for deeper 50/60 Hz
+	  rejection at the cost of a slightly wider notch and more attenuation
+	  around the center frequency.
+
+config EYE_UART_STREAM
+	bool "Stream ADC to UART for VOFA+"
+	default n
+	help
+	  Stream raw ADC samples over the console UART using VOFA+ JustFloat
+	  protocol (float32 + 0x0000807F tail). Note: do not mix with text logs.
+
+config EYE_UART_STREAM_CENTERED
+	bool "UART stream centered values"
+	default n
+	depends on EYE_UART_STREAM
+	help
+	  If enabled, stream (raw - 2048) as float; otherwise stream raw (0..4095).
+
+config EYE_UART_STREAM_HZ
+	int "UART stream frame rate (Hz)"
+	range 10 2000
+	default 500
+	depends on EYE_UART_STREAM
+	help
+	  VOFA+ frame rate.
+
+config EYE_UART_STREAM_CHANNELS
+	int "UART stream channels"
+	range 2 2
+	default 2
+	depends on EYE_UART_STREAM
+	help
+	  Fixed to 2 channels for VOFA+:
+	  CH1 = raw ADC, CH2 = filtered/decimated (notched) sample.
+
+config EYE_BLE_CONN_INTERVAL_MIN
+	int "BLE conn interval min (1.25ms units)"
+	range 6 3200
+	default 6
+	help
+	  Requested minimum connection interval (8 => 10ms).
+
+config EYE_BLE_CONN_INTERVAL_MAX
+	int "BLE conn interval max (1.25ms units)"
+	range 6 3200
+	default 12
+	help
+	  Requested maximum connection interval (8 => 10ms).
+
 endmenu

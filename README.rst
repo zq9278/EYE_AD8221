@@ -24,6 +24,17 @@ The `Testing`_ instructions refer to `nRF Connect for Mobile`_ and `nRF Blinky`_
 .. note::
    |thingy53_sample_note|
 
+Build + flash (Windows)
+**********************
+
+If you are using the provided local scripts, rebuild and flash with:
+
+- ``powershell -ExecutionPolicy Bypass -File scripts/build_flash.ps1``
+
+Build only:
+
+- ``powershell -ExecutionPolicy Bypass -File scripts/build_flash.ps1 -NoFlash``
+
 Overview
 ********
 
