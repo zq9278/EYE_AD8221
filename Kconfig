@@ -24,8 +24,8 @@ config BT_LBS_SECURITY_ENABLED
 
 config EYE_BLE_STREAM_HZ
 	int "BLE stream rate (Hz)"
-	range 10 1000
-	default 100
+	range 50 1000
+	default 200
 	help
 	  Sample rate in samples/second delivered to the BLE client (may be packed
 	  into fewer notifications).
@@ -75,6 +75,23 @@ config EYE_NOTCH_DOUBLE
 	  If enabled, run the notch filter twice (cascaded) for deeper 50/60 Hz
 	  rejection at the cost of a slightly wider notch and more attenuation
 	  around the center frequency.
+
+config EYE_ENVELOPE_ENABLED
+	bool "Compute envelope/energy (rectified + low-pass) before streaming"
+	default y
+	help
+	  Rectify (abs) the centered ADC sample and apply a first-order IIR
+	  low-pass to obtain an envelope/energy channel before decimation.
+	  This lowers bandwidth while preserving EMG strength trends.
+
+config EYE_ENVELOPE_TAU_SHIFT
+	int "Envelope IIR shift (time constant)"
+	range 3 8
+	default 5
+	depends on EYE_ENVELOPE_ENABLED
+	help
+	  IIR update: env = env + ((rect - env) >> shift). Smaller shift = faster
+	  response (shorter time constant). At 2 kHz, shift 5 ≈ ~16 ms.
 
 config EYE_UART_STREAM
 	bool "Stream ADC to UART for VOFA+"

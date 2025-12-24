@@ -106,9 +106,11 @@ static void emg_thread_fn(void *p1, void *p2, void *p3)
 	const uint32_t out_hz = CONFIG_EYE_BLE_STREAM_HZ;
 	const uint32_t period_us = 1000000U / fs_hz;
 	const uint32_t decim = fs_hz / out_hz;
+	const bool use_envelope = IS_ENABLED(CONFIG_EYE_ENVELOPE_ENABLED);
 
 	uint32_t sample_count = 0;
 	uint16_t raw_u16 = 0;
+	int32_t env_iir = 0;
 
 	for (;;) {
 		if (adc_read_once(&raw_u16) == 0) {
@@ -124,8 +126,17 @@ static void emg_thread_fn(void *p1, void *p2, void *p3)
 #endif
 			}
 
+			int32_t env = filtered;
+			if (use_envelope) {
+				int32_t rect = (filtered < 0) ? -filtered : filtered;
+				env_iir = env_iir + ((rect - env_iir) >> CONFIG_EYE_ENVELOPE_TAU_SHIFT);
+				env = env_iir;
+			}
+
 			if ((++sample_count % decim) == 0) {
-				int32_t uncentered = filtered + (1 << (ADC_RESOLUTION - 1));
+				int32_t uncentered = use_envelope
+							 ? env
+							 : (filtered + (1 << (ADC_RESOLUTION - 1)));
 				uint16_t out_u16 = (uint16_t)CLAMP(uncentered, 0, (1 << ADC_RESOLUTION) - 1);
 
 				atomic_set(&latest_sample_u16, out_u16);
