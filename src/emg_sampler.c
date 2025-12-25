@@ -124,6 +124,9 @@ static void emg_thread_fn(void *p1, void *p2, void *p3)
 #if IS_ENABLED(CONFIG_EYE_NOTCH_DOUBLE)
 			filtered = emg_notch_process(&notch2, filtered);
 #endif
+			uint16_t notch_u16_fullrate =
+				(uint16_t)CLAMP(filtered + (1 << (ADC_RESOLUTION - 1)), 0, adc_max);
+			atomic_set(&latest_notch_u16, notch_u16_fullrate);
 
 			int32_t env = filtered;
 			if (use_envelope) {
@@ -132,16 +135,14 @@ static void emg_thread_fn(void *p1, void *p2, void *p3)
 				env = env_iir;
 			}
 
-			if ((++sample_count % decim) == 0) {
-				int32_t uncentered = use_envelope
-							 ? MIN(env * 2, adc_max) /* envelope x2 for visibility */
-							 : (filtered + (1 << (ADC_RESOLUTION - 1)));
-				uint16_t out_u16 = (uint16_t)CLAMP(uncentered, 0, adc_max);
-				uint16_t notch_u16 = (uint16_t)CLAMP(filtered + (1 << (ADC_RESOLUTION - 1)),
-								     0, adc_max);
+			int32_t uncentered_fullrate = use_envelope
+							? MIN(env * 2, adc_max) /* envelope x2 for visibility */
+							: (filtered + (1 << (ADC_RESOLUTION - 1)));
+			uint16_t out_fullrate_u16 = (uint16_t)CLAMP(uncentered_fullrate, 0, adc_max);
+			atomic_set(&latest_sample_u16, out_fullrate_u16);
 
-				atomic_set(&latest_sample_u16, out_u16);
-				atomic_set(&latest_notch_u16, notch_u16);
+			if ((++sample_count % decim) == 0) {
+				uint16_t out_u16 = out_fullrate_u16;
 				uint32_t seq = (uint32_t)atomic_inc(&stream_seq);
 				atomic_set(&latest_seq, (atomic_val_t)seq);
 
