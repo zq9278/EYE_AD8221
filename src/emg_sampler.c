@@ -107,6 +107,7 @@ static void emg_thread_fn(void *p1, void *p2, void *p3)
 	const uint32_t period_us = 1000000U / fs_hz;
 	const uint32_t decim = fs_hz / out_hz;
 	const bool use_envelope = IS_ENABLED(CONFIG_EYE_ENVELOPE_ENABLED);
+	const int32_t adc_max = (1 << ADC_RESOLUTION) - 1;
 
 	uint32_t sample_count = 0;
 	uint16_t raw_u16 = 0;
@@ -135,9 +136,9 @@ static void emg_thread_fn(void *p1, void *p2, void *p3)
 
 			if ((++sample_count % decim) == 0) {
 				int32_t uncentered = use_envelope
-							 ? env
+							 ? MIN(env * 2, adc_max) /* envelope x2 for visibility */
 							 : (filtered + (1 << (ADC_RESOLUTION - 1)));
-				uint16_t out_u16 = (uint16_t)CLAMP(uncentered, 0, (1 << ADC_RESOLUTION) - 1);
+				uint16_t out_u16 = (uint16_t)CLAMP(uncentered, 0, adc_max);
 
 				atomic_set(&latest_sample_u16, out_u16);
 				uint32_t seq = (uint32_t)atomic_inc(&stream_seq);
