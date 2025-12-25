@@ -15,3 +15,4 @@ uint32_t emg_sampler_pop_stream(uint32_t *first_seq, uint16_t *dst, uint32_t max
 uint32_t emg_sampler_get_stream_drop_count(void);
 uint32_t emg_sampler_get_clip_hi(void);
 uint32_t emg_sampler_get_clip_lo(void);
+uint16_t emg_sampler_get_latest_notch_u16(void);

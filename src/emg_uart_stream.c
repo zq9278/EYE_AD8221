@@ -49,24 +49,32 @@ static void uart_stream_thread_fn(void *p1, void *p2, void *p3)
 #endif
 
 	for (;;) {
-	uint16_t raw = emg_sampler_get_latest_raw_u16();
-	uint16_t filtered = emg_sampler_get_latest_sample_u16();
+		uint16_t raw = emg_sampler_get_latest_raw_u16();
+		uint16_t filtered = emg_sampler_get_latest_sample_u16();
+		uint16_t notch = emg_sampler_get_latest_notch_u16();
 
-	float ch1;
-	float ch2;
-	if (IS_ENABLED(CONFIG_EYE_UART_STREAM_CENTERED)) {
-		ch1 = (float)((int32_t)raw - 2048);
-		ch2 = (float)((int32_t)filtered - 2048);
-	} else {
-		ch1 = (float)raw;
-		ch2 = (float)filtered;
-	}
+		float ch1;
+		float ch2;
+		float ch3;
+		if (IS_ENABLED(CONFIG_EYE_UART_STREAM_CENTERED)) {
+			ch1 = (float)((int32_t)raw - 2048);
+			ch2 = (float)((int32_t)filtered - 2048);
+			ch3 = (float)((int32_t)notch - 2048);
+		} else {
+			ch1 = (float)raw;
+			ch2 = (float)filtered;
+			ch3 = (float)notch;
+		}
 
 		union { float f; uint8_t b[4]; } u1 = { .f = ch1 };
 		union { float f; uint8_t b[4]; } u2 = { .f = ch2 };
+		union { float f; uint8_t b[4]; } u3 = { .f = ch3 };
 
 		uart_write_bytes(u1.b, sizeof(u1.b));
 		uart_write_bytes(u2.b, sizeof(u2.b));
+		if (CONFIG_EYE_UART_STREAM_CHANNELS >= 3) {
+			uart_write_bytes(u3.b, sizeof(u3.b));
+		}
 		uart_write_bytes(vofa_tail, sizeof(vofa_tail));
 
 		k_usleep(period_us);

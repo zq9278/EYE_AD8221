@@ -91,7 +91,7 @@ config EYE_ENVELOPE_TAU_SHIFT
 	depends on EYE_ENVELOPE_ENABLED
 	help
 	  IIR update: env = env + ((rect - env) >> shift). Smaller shift = faster
-	  response (shorter time constant). At 2 kHz, shift 5 ≈ ~16 ms.
+	  response (shorter time constant). At 2 kHz, shift 5 ~16 ms.
 
 config EYE_UART_STREAM
 	bool "Stream ADC to UART for VOFA+"
@@ -117,12 +117,13 @@ config EYE_UART_STREAM_HZ
 
 config EYE_UART_STREAM_CHANNELS
 	int "UART stream channels"
-	range 2 2
-	default 2
+	range 2 3
+	default 3
 	depends on EYE_UART_STREAM
 	help
-	  Fixed to 2 channels for VOFA+:
-	  CH1 = raw ADC, CH2 = filtered/decimated (notched) sample.
+	  Fixed to 2-3 channels for VOFA+:
+	  2: CH1 raw ADC, CH2 filtered/decimated
+	  3: CH1 raw, CH2 filtered/decimated, CH3 notch-filtered (50/60 Hz)
 
 config EYE_BLE_CONN_INTERVAL_MIN
 	int "BLE conn interval min (1.25ms units)"

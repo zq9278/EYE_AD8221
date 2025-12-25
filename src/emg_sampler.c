@@ -31,6 +31,7 @@ static atomic_t latest_sample_u16;
 static atomic_t latest_seq;
 static atomic_t latest_raw_u16;
 static atomic_t latest_raw_seq;
+static atomic_t latest_notch_u16;
 static atomic_t stream_drop;
 static atomic_t raw_clip_hi;
 static atomic_t raw_clip_lo;
@@ -119,13 +120,10 @@ static void emg_thread_fn(void *p1, void *p2, void *p3)
 			atomic_inc(&latest_raw_seq);
 
 			int32_t centered = (int32_t)raw_u16 - (1 << (ADC_RESOLUTION - 1));
-			int32_t filtered = centered;
-			if (IS_ENABLED(CONFIG_EYE_NOTCH_ENABLED)) {
-				filtered = emg_notch_process(&notch1, filtered);
+			int32_t filtered = emg_notch_process(&notch1, centered);
 #if IS_ENABLED(CONFIG_EYE_NOTCH_DOUBLE)
-				filtered = emg_notch_process(&notch2, filtered);
+			filtered = emg_notch_process(&notch2, filtered);
 #endif
-			}
 
 			int32_t env = filtered;
 			if (use_envelope) {
@@ -139,8 +137,11 @@ static void emg_thread_fn(void *p1, void *p2, void *p3)
 							 ? MIN(env * 2, adc_max) /* envelope x2 for visibility */
 							 : (filtered + (1 << (ADC_RESOLUTION - 1)));
 				uint16_t out_u16 = (uint16_t)CLAMP(uncentered, 0, adc_max);
+				uint16_t notch_u16 = (uint16_t)CLAMP(filtered + (1 << (ADC_RESOLUTION - 1)),
+								     0, adc_max);
 
 				atomic_set(&latest_sample_u16, out_u16);
+				atomic_set(&latest_notch_u16, notch_u16);
 				uint32_t seq = (uint32_t)atomic_inc(&stream_seq);
 				atomic_set(&latest_seq, (atomic_val_t)seq);
 
@@ -168,26 +169,25 @@ int emg_sampler_init(void)
 		return err;
 	}
 
-	if (IS_ENABLED(CONFIG_EYE_NOTCH_ENABLED)) {
-		err = emg_notch_configure(&notch1, CONFIG_EYE_ADC_SAMPLE_RATE_HZ,
-					  CONFIG_EYE_NOTCH_FREQ_HZ, CONFIG_EYE_NOTCH_Q);
-		if (err) {
-			return -EINVAL;
-		}
-#if IS_ENABLED(CONFIG_EYE_NOTCH_DOUBLE)
-		err = emg_notch_configure(&notch2, CONFIG_EYE_ADC_SAMPLE_RATE_HZ,
-					  CONFIG_EYE_NOTCH_FREQ_HZ, CONFIG_EYE_NOTCH_Q);
-		if (err) {
-			return -EINVAL;
-		}
-#endif
+	err = emg_notch_configure(&notch1, CONFIG_EYE_ADC_SAMPLE_RATE_HZ,
+				  CONFIG_EYE_NOTCH_FREQ_HZ, CONFIG_EYE_NOTCH_Q);
+	if (err) {
+		return -EINVAL;
 	}
+#if IS_ENABLED(CONFIG_EYE_NOTCH_DOUBLE)
+	err = emg_notch_configure(&notch2, CONFIG_EYE_ADC_SAMPLE_RATE_HZ,
+				  CONFIG_EYE_NOTCH_FREQ_HZ, CONFIG_EYE_NOTCH_Q);
+	if (err) {
+		return -EINVAL;
+	}
+#endif
 
 	atomic_set(&latest_sample_u16, 0);
 	atomic_set(&latest_seq, 0);
 	atomic_set(&latest_raw_u16, 0);
 	atomic_set(&latest_raw_seq, 0);
 	atomic_set(&stream_seq, 0);
+	atomic_set(&latest_notch_u16, 0);
 	atomic_set(&stream_drop, 0);
 	atomic_set(&raw_clip_hi, 0);
 	atomic_set(&raw_clip_lo, 0);
@@ -218,6 +218,11 @@ uint32_t emg_sampler_get_latest_raw_seq(void)
 uint16_t emg_sampler_get_latest_raw_u16(void)
 {
 	return (uint16_t)atomic_get(&latest_raw_u16);
+}
+
+uint16_t emg_sampler_get_latest_notch_u16(void)
+{
+	return (uint16_t)atomic_get(&latest_notch_u16);
 }
 
 uint32_t emg_sampler_pop_stream(uint32_t *first_seq, uint16_t *dst, uint32_t max_samples)
