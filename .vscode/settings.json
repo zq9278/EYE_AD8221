@@ -1,0 +1,5 @@
+{
+    "nrf-connect.debugging.bindings": {
+        "${workspaceFolder}/build/EYE_AD8221": "Launch EYE_AD8221"
+    }
+}

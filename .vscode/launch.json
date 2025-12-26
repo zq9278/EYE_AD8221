@@ -1,0 +1,12 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "nrf-connect",
+			"request": "launch",
+			"name": "Launch EYE_AD8221",
+			"config": "${workspaceFolder}/build/EYE_AD8221",
+			"runToEntryPoint": "main"
+		}
+	]
+}

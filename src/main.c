@@ -366,13 +366,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
 	request_fast_conn_params(conn);
 
-#if defined(CONFIG_BT_PHY_UPDATE)
-	struct bt_conn_le_phy_param phy = {
-		.pref_tx_phy = BT_GAP_LE_PHY_2M,
-		.pref_rx_phy = BT_GAP_LE_PHY_2M,
-	};
-	(void)bt_conn_le_phy_update(conn, &phy);
-#endif
+	/* nRF52810 does not support LE 2M PHY; skip bt_conn_le_phy_update to avoid link error. */
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
