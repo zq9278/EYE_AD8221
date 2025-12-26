@@ -96,9 +96,11 @@ static void process_sample(int16_t raw)
 
 	int32_t env = filtered;
 	if (use_envelope) {
+#if IS_ENABLED(CONFIG_EYE_ENVELOPE_ENABLED)
 		int32_t rect = (filtered < 0) ? -filtered : filtered;
 		env_iir = env_iir + ((rect - env_iir) >> CONFIG_EYE_ENVELOPE_TAU_SHIFT);
 		env = env_iir;
+#endif
 	}
 
 	int32_t uncentered_fullrate = use_envelope
