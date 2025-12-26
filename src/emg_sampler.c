@@ -48,7 +48,10 @@ static atomic_t stream_drop;
 static atomic_t raw_clip_hi;
 static atomic_t raw_clip_lo;
 /* Queue for UART to fetch every sample (raw + filtered + notch). */
-K_MSGQ_DEFINE(uart_sample_q, sizeof(struct emg_sample_triple), 128, 4);
+/* UART queue: increase depth to reduce drops at higher sample rates. */
+K_MSGQ_DEFINE(uart_sample_q, sizeof(struct emg_sample_triple), 256, 4);
+static atomic_t uart_q_drop;
+static atomic_t uart_q_hwm;
 
 struct stream_item {
 	uint32_t seq;
@@ -134,10 +137,15 @@ static void process_sample(int16_t raw)
 		.filtered = out_fullrate_u16,
 		.notch = (uint16_t)atomic_get(&latest_notch_u16),
 	};
+	uint32_t used = (uint32_t)k_msgq_num_used_get(&uart_sample_q);
+	if (used > (uint32_t)atomic_get(&uart_q_hwm)) {
+		atomic_set(&uart_q_hwm, (atomic_val_t)used);
+	}
 	if (k_msgq_put(&uart_sample_q, &triple, K_NO_WAIT) != 0) {
 		struct emg_sample_triple dropped;
 		(void)k_msgq_get(&uart_sample_q, &dropped, K_NO_WAIT);
 		(void)k_msgq_put(&uart_sample_q, &triple, K_NO_WAIT);
+		atomic_inc(&uart_q_drop);
 	}
 }
 
@@ -359,6 +367,16 @@ int emg_sampler_get_uart_triple(struct emg_sample_triple *out, k_timeout_t timeo
 uint16_t emg_sampler_get_latest_notch_u16(void)
 {
 	return (uint16_t)atomic_get(&latest_notch_u16);
+}
+
+uint32_t emg_sampler_get_uart_drop(void)
+{
+	return (uint32_t)atomic_get(&uart_q_drop);
+}
+
+uint32_t emg_sampler_get_uart_hwm(void)
+{
+	return (uint32_t)atomic_get(&uart_q_hwm);
 }
 
 uint32_t emg_sampler_pop_stream(uint32_t *first_seq, uint16_t *dst, uint32_t max_samples)

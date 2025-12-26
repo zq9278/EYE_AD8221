@@ -5,7 +5,12 @@
 #include "emg_notch.h"
 
 #include <stddef.h>
+#include <math.h>
 #include <zephyr/sys/printk.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 struct coeff_entry {
 	uint16_t fs_hz;
@@ -75,6 +80,43 @@ static const struct coeff_entry *find_best_coeff(uint32_t fs_hz, uint32_t f0_hz,
 	return best;
 }
 
+static int compute_fallback_coeff(struct emg_notch_biquad_q30 *state,
+				  uint32_t fs_hz, uint32_t f0_hz, uint32_t q)
+{
+	if (f0_hz == 0 || fs_hz == 0 || q == 0) {
+		return -1;
+	}
+
+	double w0 = 2.0 * M_PI * ((double)f0_hz / (double)fs_hz);
+	double cos_w0 = cos(w0);
+	double alpha = sin(w0) / (2.0 * (double)q);
+
+	double b0 = 1.0;
+	double b1 = -2.0 * cos_w0;
+	double b2 = 1.0;
+	double a0 = 1.0 + alpha;
+	double a1 = -2.0 * cos_w0;
+	double a2 = 1.0 - alpha;
+
+	/* Normalize by a0 */
+	b0 /= a0;
+	b1 /= a0;
+	b2 /= a0;
+	a1 /= a0;
+	a2 /= a0;
+
+	const double q30 = (double)(1ULL << 30);
+	state->b0 = (int32_t)lrint(b0 * q30);
+	state->b1 = (int32_t)lrint(b1 * q30);
+	state->b2 = (int32_t)lrint(b2 * q30);
+	state->a1 = (int32_t)lrint(a1 * q30);
+	state->a2 = (int32_t)lrint(a2 * q30);
+	emg_notch_reset(state);
+
+	printk("Notch coeff computed (fs=%u f0=%u q=%u)\n", fs_hz, f0_hz, q);
+	return 0;
+}
+
 void emg_notch_reset(struct emg_notch_biquad_q30 *state)
 {
 	if (!state) {
@@ -94,16 +136,7 @@ int emg_notch_configure(struct emg_notch_biquad_q30 *state, uint32_t fs_hz,
 
 	const struct coeff_entry *e = find_best_coeff(fs_hz, f0_hz, q);
 	if (!e) {
-		/* Fallback: bypass filter if unsupported fs/f0/Q (e.g. fs=4000). */
-		state->b0 = (1 << 30);
-		state->b1 = 0;
-		state->b2 = 0;
-		state->a1 = 0;
-		state->a2 = 0;
-		emg_notch_reset(state);
-		printk("Notch coeff missing for fs=%u f0=%u q=%u, bypassing\n",
-		       fs_hz, f0_hz, q);
-		return 0;
+		return compute_fallback_coeff(state, fs_hz, f0_hz, q);
 	}
 
 	state->b0 = e->b0;

@@ -24,3 +24,5 @@ uint32_t emg_sampler_get_stream_drop_count(void);
 uint32_t emg_sampler_get_clip_hi(void);
 uint32_t emg_sampler_get_clip_lo(void);
 uint16_t emg_sampler_get_latest_notch_u16(void);
+uint32_t emg_sampler_get_uart_drop(void);
+uint32_t emg_sampler_get_uart_hwm(void);

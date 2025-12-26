@@ -31,10 +31,16 @@ static void uart_stream_thread_fn(void *p1, void *p2, void *p3)
 			continue;
 		}
 
-		/* Binary frame: AA 55 <len=2> <raw_le>. */
+		/* Binary frame: AA 55 <len=4> <raw_le> <notch_le>. */
 		uint8_t raw_le[2];
+		uint8_t notch_le[2];
 		sys_put_le16(triple.raw, raw_le);
-		uint8_t frame[5] = { 0xAA, 0x55, 0x02, raw_le[0], raw_le[1] };
+		sys_put_le16(triple.notch, notch_le);
+		uint8_t frame[7] = {
+			0xAA, 0x55, 0x04,
+			raw_le[0], raw_le[1],
+			notch_le[0], notch_le[1],
+		};
 		for (size_t i = 0; i < sizeof(frame); i++) {
 			uart_poll_out(uart_dev, frame[i]);
 		}

@@ -479,6 +479,9 @@ int main(void)
 			       emg_sampler_get_stream_drop_count(),
 			       emg_sampler_get_clip_lo(),
 			       emg_sampler_get_clip_hi());
+			printk("UART q: drop=%u hwm=%u\n",
+			       emg_sampler_get_uart_drop(),
+			       emg_sampler_get_uart_hwm());
 			last_sampler_log_ms = now_ms;
 		}
 
