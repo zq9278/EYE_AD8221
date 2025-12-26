@@ -15,6 +15,7 @@ target_sources(app PRIVATE
   src/emg_sampler.c
   src/emg_uart_stream.c
   src/emg_ble_stream.c
+  src/fatal_hook.c
 )
 
 # NORDIC SDK APP END

@@ -50,6 +50,7 @@ static uint32_t last_stats_uptime_ms;
 static uint32_t stat_notify_attempts;
 static uint32_t stat_notify_ok;
 static uint32_t stat_notify_err;
+static uint32_t last_sampler_log_ms;
 
 /* BLE UUIDs */
 #define BT_UUID_EYE_SVC_VAL \
@@ -429,11 +430,13 @@ int main(void)
 {
 	int blink_status = 0;
 	int err;
+	uint32_t now_ms;
 
 	printk("Starting BLE ADC (P0.04) peripheral\n");
 	printk("UART0 pins: TX=P0.06 RX=P0.12 (1000000)\n");
 	printk("Stream target: %uHz (notify interval %ums)\n",
 	       CONFIG_EYE_BLE_STREAM_HZ, NOTIFY_INTERVAL_MS_DEFAULT);
+	printk("ADC sample rate: %u Hz\n", CONFIG_EYE_ADC_SAMPLE_RATE_HZ);
 
 	err = dk_leds_init();
 	if (err) {
@@ -467,6 +470,18 @@ int main(void)
 
 	for (;;) {
 		dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
+
+		now_ms = (uint32_t)k_uptime_get_32();
+		if ((now_ms - last_sampler_log_ms) >= 1000U) {
+			printk("ADC stats: raw=%u seq=%u drop=%u clip_lo=%u clip_hi=%u\n",
+			       emg_sampler_get_latest_raw_u16(),
+			       emg_sampler_get_latest_raw_seq(),
+			       emg_sampler_get_stream_drop_count(),
+			       emg_sampler_get_clip_lo(),
+			       emg_sampler_get_clip_hi());
+			last_sampler_log_ms = now_ms;
+		}
+
 		k_sleep(K_MSEC(RUN_LED_BLINK_INTERVAL));
 	}
 }

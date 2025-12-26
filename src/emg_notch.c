@@ -5,6 +5,7 @@
 #include "emg_notch.h"
 
 #include <stddef.h>
+#include <zephyr/sys/printk.h>
 
 struct coeff_entry {
 	uint16_t fs_hz;
@@ -93,7 +94,16 @@ int emg_notch_configure(struct emg_notch_biquad_q30 *state, uint32_t fs_hz,
 
 	const struct coeff_entry *e = find_best_coeff(fs_hz, f0_hz, q);
 	if (!e) {
-		return -2;
+		/* Fallback: bypass filter if unsupported fs/f0/Q (e.g. fs=4000). */
+		state->b0 = (1 << 30);
+		state->b1 = 0;
+		state->b2 = 0;
+		state->a1 = 0;
+		state->a2 = 0;
+		emg_notch_reset(state);
+		printk("Notch coeff missing for fs=%u f0=%u q=%u, bypassing\n",
+		       fs_hz, f0_hz, q);
+		return 0;
 	}
 
 	state->b0 = e->b0;
@@ -117,4 +127,3 @@ int32_t emg_notch_process(struct emg_notch_biquad_q30 *state, int32_t x)
 
 	return y;
 }
-

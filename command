@@ -1,0 +1,1 @@
+& "C:\Users\zq\AppData\Local\stm32cube\bundles\jlink-gdbserver\8.38.0+st.1\bin\JLink.exe" -device nRF52810_xxAA -if SWD -speed 4000 -autoconnect 1

@@ -38,6 +38,13 @@ config EYE_BLE_PACKET_HZ
 	  Notification packets per second. Each packet carries multiple samples so
 	  that EYE_BLE_STREAM_HZ samples/s are delivered with lower notify rate.
 
+config EYE_BLE_STREAM_DISABLED
+	bool "Disable BLE stream queue (debug via UART/RTT only)"
+	default n
+	help
+	  When set, the sampler will not enqueue samples for BLE streaming, avoiding
+	  queue drops while debugging over UART/RTT.
+
 config EYE_ADC_SAMPLE_RATE_HZ
 	int "ADC sample rate (Hz)"
 	range 500 4000

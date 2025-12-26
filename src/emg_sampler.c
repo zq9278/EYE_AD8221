@@ -9,6 +9,7 @@
 #include <errno.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/irq.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/printk.h>
@@ -25,7 +26,8 @@
 #define ADC_CHANNEL_ID      0
 #define ADC_INPUT           NRF_SAADC_INPUT_AIN2
 #define ADC_RESOLUTION_BITS 12
-#define SAADC_BUF_SIZE      16 /* small double-buffer for ISR processing */
+/* Larger DMA buffer: 200 samples = 100 ms @ 2 kHz (double-buffered). */
+#define SAADC_BUF_SIZE      200
 
 static const nrfx_timer_t emg_timer = NRFX_TIMER_INSTANCE(2);
 static nrf_ppi_channel_t timer_saadc_ppi;
@@ -45,13 +47,16 @@ static atomic_t latest_notch_u16;
 static atomic_t stream_drop;
 static atomic_t raw_clip_hi;
 static atomic_t raw_clip_lo;
+/* Queue for UART to fetch every sample (raw + filtered + notch). */
+K_MSGQ_DEFINE(uart_sample_q, sizeof(struct emg_sample_triple), 128, 4);
 
 struct stream_item {
 	uint32_t seq;
 	uint16_t sample;
 };
 
-K_MSGQ_DEFINE(stream_q, sizeof(struct stream_item), 128, 4);
+/* Decimated stream queue: keep 64 entries (~512 bytes) to reduce drops. */
+K_MSGQ_DEFINE(stream_q, sizeof(struct stream_item), 64, 4);
 static atomic_t stream_seq;
 
 static const uint32_t decim = CONFIG_EYE_ADC_SAMPLE_RATE_HZ / CONFIG_EYE_BLE_STREAM_HZ;
@@ -61,6 +66,7 @@ static uint32_t sample_count;
 static int32_t env_iir;
 static int evt_logged;
 static uint16_t active_buf_size = SAADC_BUF_SIZE;
+static int drop_log_budget = 8;
 
 static void process_sample(int16_t raw)
 {
@@ -98,20 +104,40 @@ static void process_sample(int16_t raw)
 	uint16_t out_fullrate_u16 = (uint16_t)CLAMP(uncentered_fullrate, 0, adc_max);
 	atomic_set(&latest_sample_u16, out_fullrate_u16);
 
-	if ((++sample_count % decim) == 0) {
-		uint32_t seq = (uint32_t)atomic_inc(&stream_seq);
-		atomic_set(&latest_seq, (atomic_val_t)seq);
+	if (!IS_ENABLED(CONFIG_EYE_BLE_STREAM_DISABLED)) {
+		if ((++sample_count % decim) == 0) {
+			uint32_t seq = (uint32_t)atomic_inc(&stream_seq);
+			atomic_set(&latest_seq, (atomic_val_t)seq);
 
-		struct stream_item item = {
-			.seq = seq,
-			.sample = out_fullrate_u16,
-		};
-		if (k_msgq_put(&stream_q, &item, K_NO_WAIT) != 0) {
-			struct stream_item dropped;
-			(void)k_msgq_get(&stream_q, &dropped, K_NO_WAIT);
-			atomic_inc(&stream_drop);
-			(void)k_msgq_put(&stream_q, &item, K_NO_WAIT);
+			struct stream_item item = {
+				.seq = seq,
+				.sample = out_fullrate_u16,
+			};
+			if (k_msgq_put(&stream_q, &item, K_NO_WAIT) != 0) {
+				struct stream_item dropped;
+				(void)k_msgq_get(&stream_q, &dropped, K_NO_WAIT);
+				uint32_t drop_new = (uint32_t)atomic_inc(&stream_drop) + 1U;
+				(void)k_msgq_put(&stream_q, &item, K_NO_WAIT);
+				if (drop_log_budget > 0) {
+					uint32_t used = (uint32_t)k_msgq_num_used_get(&stream_q);
+					printk("Stream drop #%u (used=%u seq=%u)\n",
+					       drop_new, used, seq);
+					drop_log_budget--;
+				}
+			}
 		}
+	}
+
+	/* Enqueue full-rate triple for UART; drop oldest if queue is full. */
+	struct emg_sample_triple triple = {
+		.raw = (uint16_t)raw,
+		.filtered = out_fullrate_u16,
+		.notch = (uint16_t)atomic_get(&latest_notch_u16),
+	};
+	if (k_msgq_put(&uart_sample_q, &triple, K_NO_WAIT) != 0) {
+		struct emg_sample_triple dropped;
+		(void)k_msgq_get(&uart_sample_q, &dropped, K_NO_WAIT);
+		(void)k_msgq_put(&uart_sample_q, &triple, K_NO_WAIT);
 	}
 }
 
@@ -155,6 +181,7 @@ int emg_sampler_init(void)
 	sample_count = 0;
 	env_iir = 0;
 	evt_logged = 0;
+	drop_log_budget = 8;
 
 	int err = emg_notch_configure(&notch1, CONFIG_EYE_ADC_SAMPLE_RATE_HZ,
 				      CONFIG_EYE_NOTCH_FREQ_HZ, CONFIG_EYE_NOTCH_Q);
@@ -175,9 +202,15 @@ int emg_sampler_init(void)
 		return -EIO;
 	}
 
+	/* Explicitly hook SAADC IRQ to avoid spurious interrupt (IRQ 7).
+	 * Use a valid Zephyr priority (0-3 on nRF52); nrfx defaults are out of range here.
+	 */
+	IRQ_CONNECT(SAADC_IRQn, 1, nrfx_saadc_irq_handler, NULL, 0);
+	irq_enable(SAADC_IRQn);
+
 	nrfx_saadc_channel_t ch_cfg = NRFX_SAADC_DEFAULT_CHANNEL_SE(ADC_INPUT, ADC_CHANNEL_ID);
-	ch_cfg.channel_config.gain = NRF_SAADC_GAIN1_6;
-	ch_cfg.channel_config.acq_time = NRF_SAADC_ACQTIME_40US;
+	ch_cfg.channel_config.gain = NRF_SAADC_GAIN1_5;
+	ch_cfg.channel_config.acq_time = NRF_SAADC_ACQTIME_20US;
 	ch_cfg.channel_config.reference = NRF_SAADC_REFERENCE_INTERNAL;
 	err = nrfx_saadc_channels_config(&ch_cfg, 1);
 	if (err != NRFX_SUCCESS) {
@@ -185,7 +218,9 @@ int emg_sampler_init(void)
 		return -EIO;
 	}
 
-	printk("SAADC cfg ok: gain=1/6 acq=40us bufsize=%u\n", SAADC_BUF_SIZE);
+	printk("SAADC cfg ok: gain=1/6 acq=20us bufsize=%u\n", SAADC_BUF_SIZE);
+	printk("Sampler init: fs=%u decim=%u queue=%u\n",
+	       CONFIG_EYE_ADC_SAMPLE_RATE_HZ, (unsigned int)decim, 40U);
 
 	nrfx_saadc_adv_config_t adv_cfg = NRFX_SAADC_DEFAULT_ADV_CONFIG;
 	adv_cfg.oversampling = NRF_SAADC_OVERSAMPLE_DISABLED;
@@ -221,8 +256,17 @@ int emg_sampler_init(void)
 	}
 	printk("SAADC buffers armed size=%u\n", active_buf_size);
 
-	nrfx_timer_config_t tcfg = NRFX_TIMER_DEFAULT_CONFIG(NRF_TIMER_FREQ_1MHz);
+	/* Timer drives SAADC sampling (PPI from TIMER2 compare[0] -> SAADC SAMPLE). */
+	const uint32_t timer_base_hz = NRFX_TIMER_BASE_FREQUENCY_GET(emg_timer.p_reg);
+	const uint32_t timer_target_hz = timer_base_hz; /* always valid; prescaler=0 */
+	printk("TIMER base=%u Hz target=%u Hz\n", (unsigned int)timer_base_hz,
+	       (unsigned int)timer_target_hz);
+
+	nrfx_timer_config_t tcfg = NRFX_TIMER_DEFAULT_CONFIG(timer_target_hz);
 	tcfg.bit_width = NRF_TIMER_BIT_WIDTH_32;
+	printk("TIMER cfg: mode=%u bit_width=%u irq_prio=%u\n",
+	       (unsigned int)tcfg.mode, (unsigned int)tcfg.bit_width,
+	       (unsigned int)tcfg.interrupt_priority);
 	err = nrfx_timer_init(&emg_timer, &tcfg, NULL);
 	if (err != NRFX_SUCCESS) {
 		printk("TIMER init err=0x%x\n", err);
@@ -230,6 +274,8 @@ int emg_sampler_init(void)
 	}
 
 	uint32_t ticks = nrfx_timer_us_to_ticks(&emg_timer, 1000000U / CONFIG_EYE_ADC_SAMPLE_RATE_HZ);
+	printk("TIMER ticks per sample=%u (fs=%u)\n", (unsigned int)ticks,
+	       CONFIG_EYE_ADC_SAMPLE_RATE_HZ);
 	nrfx_timer_clear(&emg_timer);
 	nrfx_timer_extended_compare(&emg_timer, NRF_TIMER_CC_CHANNEL0, ticks,
 				    NRF_TIMER_SHORT_COMPARE0_CLEAR_MASK, false);
@@ -300,6 +346,14 @@ uint32_t emg_sampler_get_latest_raw_seq(void)
 uint16_t emg_sampler_get_latest_raw_u16(void)
 {
 	return (uint16_t)atomic_get(&latest_raw_u16);
+}
+
+int emg_sampler_get_uart_triple(struct emg_sample_triple *out, k_timeout_t timeout)
+{
+	if (!out) {
+		return -EINVAL;
+	}
+	return k_msgq_get(&uart_sample_q, out, timeout);
 }
 
 uint16_t emg_sampler_get_latest_notch_u16(void)
