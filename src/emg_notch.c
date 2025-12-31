@@ -58,6 +58,10 @@ static const struct coeff_entry coeff_table[] = {
 	{ 2000, 60, 35, 1070875224, -2103814159, 1070875224, -2103814159, 1068008624 },
 };
 
+/*
+ * Pick the closest Q entry for a given fs/f0.
+ * The table only supports the fixed fs/f0 pairs above.
+ */
 static const struct coeff_entry *find_best_coeff(uint32_t fs_hz, uint32_t f0_hz, uint32_t q)
 {
 	const struct coeff_entry *best = NULL;
@@ -80,6 +84,11 @@ static const struct coeff_entry *find_best_coeff(uint32_t fs_hz, uint32_t f0_hz,
 	return best;
 }
 
+/*
+ * Fallback coefficient compute for arbitrary fs/f0/q (floating-point).
+ * The resulting coefficients are converted to Q30 and used in the
+ * integer biquad process function.
+ */
 static int compute_fallback_coeff(struct emg_notch_biquad_q30 *state,
 				  uint32_t fs_hz, uint32_t f0_hz, uint32_t q)
 {
@@ -134,6 +143,7 @@ int emg_notch_configure(struct emg_notch_biquad_q30 *state, uint32_t fs_hz,
 		return -1;
 	}
 
+	/* Prefer precomputed coefficients when available; fall back otherwise. */
 	const struct coeff_entry *e = find_best_coeff(fs_hz, f0_hz, q);
 	if (!e) {
 		return compute_fallback_coeff(state, fs_hz, f0_hz, q);

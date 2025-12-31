@@ -25,6 +25,14 @@
 #include "emg_uart_stream.h"
 #include "emg_ble_stream.h"
 
+/*
+ * Application entry point.
+ *
+ * Responsibilities:
+ * - Initialize BLE GATT service for single-sample read/notify + stream notify.
+ * - Start the SAADC sampling pipeline and UART binary streaming.
+ * - Maintain BLE advertising/connection state and send periodic stats.
+ */
 #define DEVICE_NAME             CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN         (sizeof(DEVICE_NAME) - 1)
 #define DEVICE_NAME_SHORT_MAX   8
@@ -101,6 +109,10 @@ static const struct bt_data sd[] = {
 
 static void notify_work_handler(struct k_work *work);
 
+/*
+ * CCC handlers toggle notifications for the single-sample and stream
+ * characteristics. Both of them share the same notify work item and interval.
+ */
 static void ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
 	notify_enabled = (value == BT_GATT_CCC_NOTIFY);
@@ -139,6 +151,7 @@ static void stream_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t val
 static ssize_t read_adc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 			void *buf, uint16_t len, uint16_t offset)
 {
+	/* Read handler returns the latest filtered sample (little-endian). */
 	uint16_t sample = emg_sampler_get_latest_sample_u16();
 	uint16_t sample_le = sys_cpu_to_le16(sample);
 
@@ -160,6 +173,7 @@ static ssize_t write_cfg(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 
 	uint16_t interval = sys_get_le16(buf);
 
+	/* Clamp to a safe interval range to avoid flooding or slowing down too far. */
 	if (interval != 0 && interval < NOTIFY_INTERVAL_MS_MIN) {
 		interval = NOTIFY_INTERVAL_MS_MIN;
 	}
@@ -200,6 +214,7 @@ static void notify_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
+	/* Work item is shared by both notify paths and reschedules itself. */
 	if (!default_conn || notify_interval_ms == 0 || (!notify_enabled && !stream_notify_enabled)) {
 		return;
 	}
@@ -232,6 +247,12 @@ static void notify_work_handler(struct k_work *work)
 	}
 
 	if (stream_notify_enabled) {
+		/*
+		 * Stream notify mode:
+		 * - Pulls a packet of samples from the sampler stream queue.
+		 * - Chunks the packet to fit the current MTU.
+		 * - Spreads chunks across the notify interval to reduce bursts.
+		 */
 		static uint32_t period_end_ms;
 		static uint32_t staged_first_seq;
 		static uint16_t staged_samples[STREAM_SAMPLES_PER_PACKET];
@@ -248,6 +269,7 @@ static void notify_work_handler(struct k_work *work)
 			return;
 		}
 
+		/* Stage a new packet when the previous one has been fully sent. */
 		if (staged_off >= staged_count) {
 			if (period_end_ms != 0U && (int32_t)(now_ms - period_end_ms) < 0) {
 				k_work_schedule(&notify_work, K_MSEC(period_end_ms - now_ms));
@@ -320,6 +342,7 @@ static void notify_work_handler(struct k_work *work)
 		}
 		return;
 	} else if (notify_enabled) {
+		/* Single-sample notify mode (simple characteristic notify). */
 		uint16_t sample = emg_sampler_get_latest_sample_u16();
 		uint16_t sample_le = sys_cpu_to_le16(sample);
 
@@ -338,6 +361,7 @@ static void notify_work_handler(struct k_work *work)
 
 static void adv_work_handler(struct k_work *work)
 {
+	/* Deferred advertising start to keep startup ordering clean. */
 	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 
 	if (err) {
@@ -432,6 +456,7 @@ int main(void)
 	int err;
 	uint32_t now_ms;
 
+	/* Bring up console logging early for power-on visibility. */
 	printk("Starting BLE ADC (P0.04) peripheral\n");
 	printk("UART0 pins: TX=P0.06 RX=P0.12 (1000000)\n");
 	printk("Stream target: %uHz (notify interval %ums)\n",
@@ -452,12 +477,14 @@ int main(void)
 
 	printk("Bluetooth initialized\n");
 
+	/* Start the sampling pipeline before enabling streaming outputs. */
 	err = emg_sampler_init();
 	if (err) {
 		printk("Sampler init failed (err %d)\n", err);
 		return 0;
 	}
 
+	/* UART stream uses a dedicated thread and binary frames. */
 	err = emg_uart_stream_init();
 	if (err) {
 		printk("UART stream init failed (err %d)\n", err);
@@ -471,6 +498,7 @@ int main(void)
 	for (;;) {
 		dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
 
+		/* Once per second: print sampling and queue stats for troubleshooting. */
 		now_ms = (uint32_t)k_uptime_get_32();
 		if ((now_ms - last_sampler_log_ms) >= 1000U) {
 			printk("ADC stats: raw=%u seq=%u drop=%u clip_lo=%u clip_hi=%u\n",

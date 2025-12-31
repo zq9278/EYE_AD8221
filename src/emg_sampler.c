@@ -22,6 +22,20 @@
 #define NRFX_SAADC_CONFIG_IRQ_PRIORITY 6
 #endif
 
+/*
+ * SAADC sampler pipeline.
+ *
+ * Data flow:
+ * - TIMER2 compares at fs -> PPI -> SAADC SAMPLE
+ * - SAADC EasyDMA fills double buffers
+ * - SAADC DONE ISR processes samples:
+ *   raw -> notch -> high-pass (DC block) -> optional envelope
+ * - Outputs:
+ *   - Latest values (atomics) for BLE read/notify
+ *   - Stream queue (decimated) for BLE streaming
+ *   - UART queue (full-rate) for binary streaming
+ */
+
 /* SAADC (P0.04 = AIN2 on nRF52) */
 #define ADC_CHANNEL_ID      0
 #define ADC_INPUT           NRF_SAADC_INPUT_AIN2
@@ -44,12 +58,13 @@ static atomic_t latest_seq;
 static atomic_t latest_raw_u16;
 static atomic_t latest_raw_seq;
 static atomic_t latest_notch_u16;
+static atomic_t latest_env_u16;
 static atomic_t stream_drop;
 static atomic_t raw_clip_hi;
 static atomic_t raw_clip_lo;
 /* Queue for UART to fetch every sample (raw + filtered + notch). */
-/* UART queue: increase depth to reduce drops at higher sample rates. */
-K_MSGQ_DEFINE(uart_sample_q, sizeof(struct emg_sample_triple), 256, 4);
+/* UART queue depth trimmed for RAM headroom. */
+K_MSGQ_DEFINE(uart_sample_q, sizeof(struct emg_sample_triple), 192, 4);
 static atomic_t uart_q_drop;
 static atomic_t uart_q_hwm;
 
@@ -67,10 +82,23 @@ static const bool use_envelope = IS_ENABLED(CONFIG_EYE_ENVELOPE_ENABLED);
 static const int32_t adc_max = (1 << ADC_RESOLUTION_BITS) - 1;
 static uint32_t sample_count;
 static int32_t env_iir;
+static uint16_t env_last_u16;
 static int evt_logged;
 static uint16_t active_buf_size = SAADC_BUF_SIZE;
 static int drop_log_budget = 8;
+/* Simple high-pass (DC-block) on centered filtered signal: y = x - x1 + a*y1 (Q15). */
+#define HP_A_Q15 32112 /* ~0.98 */
+static int32_t hp_x1;
+static int32_t hp_y1;
 
+/*
+ * Process one raw sample:
+ * - Clip to ADC range, track clip counters.
+ * - Notch filter at mains frequency (single or double stage).
+ * - DC-block high-pass to remove baseline wander.
+ * - Envelope extraction (abs + IIR).
+ * - Publish to atomics + queues.
+ */
 static void process_sample(int16_t raw)
 {
 	if (raw < 0) {
@@ -89,27 +117,33 @@ static void process_sample(int16_t raw)
 #if IS_ENABLED(CONFIG_EYE_NOTCH_DOUBLE)
 	filtered = emg_notch_process(&notch2, filtered);
 #endif
+	/* DC-block to keep the baseline near mid-scale. */
+	int32_t hp_y = (int32_t)filtered - hp_x1 + ((hp_y1 * HP_A_Q15) >> 15);
+	hp_x1 = filtered;
+	hp_y1 = hp_y;
 
 	uint16_t notch_u16_fullrate =
-		(uint16_t)CLAMP(filtered + (1 << (ADC_RESOLUTION_BITS - 1)), 0, adc_max);
+		(uint16_t)CLAMP(hp_y + (1 << (ADC_RESOLUTION_BITS - 1)), 0, adc_max);
 	atomic_set(&latest_notch_u16, notch_u16_fullrate);
 
 	int32_t env = filtered;
 	if (use_envelope) {
-#if IS_ENABLED(CONFIG_EYE_ENVELOPE_ENABLED)
-		int32_t rect = (filtered < 0) ? -filtered : filtered;
+		/* Rectify and smooth to approximate signal envelope. */
+		int32_t rect = (hp_y < 0) ? -hp_y : hp_y;
 		env_iir = env_iir + ((rect - env_iir) >> CONFIG_EYE_ENVELOPE_TAU_SHIFT);
 		env = env_iir;
-#endif
 	}
 
-	int32_t uncentered_fullrate = use_envelope
-						? MIN(env * 2, adc_max) /* envelope x2 for visibility */
-						: (filtered + (1 << (ADC_RESOLUTION_BITS - 1)));
+	uint16_t env_u16 = (uint16_t)CLAMP(env, 0, adc_max);
+	env_last_u16 = env_u16;
+
+	int32_t uncentered_fullrate = hp_y + (1 << (ADC_RESOLUTION_BITS - 1));
 	uint16_t out_fullrate_u16 = (uint16_t)CLAMP(uncentered_fullrate, 0, adc_max);
 	atomic_set(&latest_sample_u16, out_fullrate_u16);
+	atomic_set(&latest_env_u16, env_u16);
 
 	if (!IS_ENABLED(CONFIG_EYE_BLE_STREAM_DISABLED)) {
+		/* Decimate to the BLE stream rate to keep queue size manageable. */
 		if ((++sample_count % decim) == 0) {
 			uint32_t seq = (uint32_t)atomic_inc(&stream_seq);
 			atomic_set(&latest_seq, (atomic_val_t)seq);
@@ -138,6 +172,7 @@ static void process_sample(int16_t raw)
 		.raw = (uint16_t)raw,
 		.filtered = out_fullrate_u16,
 		.notch = (uint16_t)atomic_get(&latest_notch_u16),
+		.envelope = env_last_u16,
 	};
 	uint32_t used = (uint32_t)k_msgq_num_used_get(&uart_sample_q);
 	if (used > (uint32_t)atomic_get(&uart_q_hwm)) {
@@ -151,6 +186,11 @@ static void process_sample(int16_t raw)
 	}
 }
 
+/*
+ * SAADC event handler:
+ * - Iterate completed buffer and process each sample.
+ * - Re-queue the buffer for continuous sampling.
+ */
 static void saadc_evt_handler(nrfx_saadc_evt_t const *p_event)
 {
 	switch (p_event->type) {
@@ -179,20 +219,26 @@ static void saadc_evt_handler(nrfx_saadc_evt_t const *p_event)
 
 int emg_sampler_init(void)
 {
+	/* Reset state and counters first to avoid stale stats. */
 	atomic_set(&latest_sample_u16, 0);
 	atomic_set(&latest_seq, 0);
 	atomic_set(&latest_raw_u16, 0);
 	atomic_set(&latest_raw_seq, 0);
 	atomic_set(&stream_seq, 0);
 	atomic_set(&latest_notch_u16, 0);
+	atomic_set(&latest_env_u16, 0);
 	atomic_set(&stream_drop, 0);
 	atomic_set(&raw_clip_hi, 0);
 	atomic_set(&raw_clip_lo, 0);
 	sample_count = 0;
 	env_iir = 0;
+	env_last_u16 = 0;
+	hp_x1 = 0;
+	hp_y1 = 0;
 	evt_logged = 0;
 	drop_log_budget = 8;
 
+	/* Configure notch biquad(s) for the current sample rate. */
 	int err = emg_notch_configure(&notch1, CONFIG_EYE_ADC_SAMPLE_RATE_HZ,
 				      CONFIG_EYE_NOTCH_FREQ_HZ, CONFIG_EYE_NOTCH_Q);
 	if (err) {
@@ -218,6 +264,7 @@ int emg_sampler_init(void)
 	IRQ_CONNECT(SAADC_IRQn, 1, nrfx_saadc_irq_handler, NULL, 0);
 	irq_enable(SAADC_IRQn);
 
+	/* Single-ended channel on AIN2 with internal reference. */
 	nrfx_saadc_channel_t ch_cfg = NRFX_SAADC_DEFAULT_CHANNEL_SE(ADC_INPUT, ADC_CHANNEL_ID);
 	ch_cfg.channel_config.gain = NRF_SAADC_GAIN1_5;
 	ch_cfg.channel_config.acq_time = NRF_SAADC_ACQTIME_20US;
@@ -232,6 +279,7 @@ int emg_sampler_init(void)
 	printk("Sampler init: fs=%u decim=%u queue=%u\n",
 	       CONFIG_EYE_ADC_SAMPLE_RATE_HZ, (unsigned int)decim, 40U);
 
+	/* Advanced mode lets us use EasyDMA buffers + event callback. */
 	nrfx_saadc_adv_config_t adv_cfg = NRFX_SAADC_DEFAULT_ADV_CONFIG;
 	adv_cfg.oversampling = NRF_SAADC_OVERSAMPLE_DISABLED;
 	adv_cfg.burst = NRF_SAADC_BURST_DISABLED;
@@ -246,6 +294,7 @@ int emg_sampler_init(void)
 		return -EIO;
 	}
 
+	/* Double-buffering to keep sampling continuous. */
 	err = nrfx_saadc_buffer_set(saadc_buf[0], SAADC_BUF_SIZE);
 	if (err != NRFX_SUCCESS) {
 		printk("SAADC buf0 set err=0x%x (size=%u)\n", err, SAADC_BUF_SIZE);
@@ -283,6 +332,7 @@ int emg_sampler_init(void)
 		return -EIO;
 	}
 
+	/* Compare interval in microseconds for the requested fs. */
 	uint32_t ticks = nrfx_timer_us_to_ticks(&emg_timer, 1000000U / CONFIG_EYE_ADC_SAMPLE_RATE_HZ);
 	printk("TIMER ticks per sample=%u (fs=%u)\n", (unsigned int)ticks,
 	       CONFIG_EYE_ADC_SAMPLE_RATE_HZ);
@@ -291,6 +341,7 @@ int emg_sampler_init(void)
 				    NRF_TIMER_SHORT_COMPARE0_CLEAR_MASK, false);
 	nrfx_timer_enable(&emg_timer);
 
+	/* PPI: TIMER COMPARE -> SAADC SAMPLE. */
 	err = nrfx_ppi_channel_alloc(&timer_saadc_ppi);
 	if (err != NRFX_SUCCESS) {
 		printk("PPI alloc timer->saadc err=0x%x\n", err);
@@ -310,6 +361,7 @@ int emg_sampler_init(void)
 	}
 
 	/* PPI: SAADC END -> START to keep sampling continuously with EasyDMA buffers. */
+	/* PPI: SAADC END -> SAADC START for seamless DMA buffer cycling. */
 	err = nrfx_ppi_channel_alloc(&saadc_start_ppi);
 	if (err != NRFX_SUCCESS) {
 		printk("PPI alloc end->start err=0x%x\n", err);

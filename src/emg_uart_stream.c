@@ -18,6 +18,13 @@ K_THREAD_STACK_DEFINE(uart_stream_stack, 768);
 static struct k_thread uart_stream_thread;
 static const struct device *uart_dev;
 
+/*
+ * UART streaming thread.
+ *
+ * Pulls full-rate samples from the sampler queue and emits a compact binary
+ * frame on UART0. Frame format (little-endian):
+ *   0xAA 0x55 <len=0x06> <raw> <notch> <envelope>
+ */
 static void uart_stream_thread_fn(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -31,15 +38,18 @@ static void uart_stream_thread_fn(void *p1, void *p2, void *p3)
 			continue;
 		}
 
-		/* Binary frame: AA 55 <len=4> <raw_le> <notch_le>. */
+		/* Construct the fixed-length frame to avoid formatting overhead. */
 		uint8_t raw_le[2];
 		uint8_t notch_le[2];
+		uint8_t env_le[2];
 		sys_put_le16(triple.raw, raw_le);
 		sys_put_le16(triple.notch, notch_le);
-		uint8_t frame[7] = {
-			0xAA, 0x55, 0x04,
+		sys_put_le16(triple.envelope, env_le);
+		uint8_t frame[9] = {
+			0xAA, 0x55, 0x06,
 			raw_le[0], raw_le[1],
 			notch_le[0], notch_le[1],
+			env_le[0], env_le[1],
 		};
 		for (size_t i = 0; i < sizeof(frame); i++) {
 			uart_poll_out(uart_dev, frame[i]);
@@ -53,6 +63,7 @@ int emg_uart_stream_init(void)
 		return 0;
 	}
 
+	/* UART device is fixed to uart0; use polling to keep ISR load low. */
 	const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(uart0));
 	if (!device_is_ready(dev)) {
 		return -ENODEV;
