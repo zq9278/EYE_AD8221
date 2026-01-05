@@ -70,7 +70,8 @@ static atomic_t uart_q_hwm;
 
 struct stream_item {
 	uint32_t seq;
-	uint16_t sample;
+	uint16_t filtered;
+	uint16_t envelope;
 };
 
 /* Decimated stream queue: keep 64 entries (~512 bytes) to reduce drops. */
@@ -150,7 +151,8 @@ static void process_sample(int16_t raw)
 
 			struct stream_item item = {
 				.seq = seq,
-				.sample = out_fullrate_u16,
+				.filtered = out_fullrate_u16,
+				.envelope = env_last_u16,
 			};
 			if (k_msgq_put(&stream_q, &item, K_NO_WAIT) != 0) {
 				struct stream_item dropped;
@@ -433,7 +435,8 @@ uint32_t emg_sampler_get_uart_hwm(void)
 	return (uint32_t)atomic_get(&uart_q_hwm);
 }
 
-uint32_t emg_sampler_pop_stream(uint32_t *first_seq, uint16_t *dst, uint32_t max_samples)
+uint32_t emg_sampler_pop_stream(uint32_t *first_seq, struct emg_stream_pair *dst,
+				uint32_t max_samples)
 {
 	if (!first_seq || !dst || max_samples == 0) {
 		return 0;
@@ -450,7 +453,9 @@ uint32_t emg_sampler_pop_stream(uint32_t *first_seq, uint16_t *dst, uint32_t max
 		if (count == 0) {
 			*first_seq = item.seq;
 		}
-		dst[count++] = item.sample;
+		dst[count].filtered = item.filtered;
+		dst[count].envelope = item.envelope;
+		count++;
 	}
 
 	return count;

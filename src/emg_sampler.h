@@ -18,6 +18,13 @@ struct emg_sample_triple {
 	uint16_t envelope;
 } __packed;
 
+struct emg_stream_pair {
+	/* Filtered sample (same as latest_sample_u16). */
+	uint16_t filtered;
+	/* Envelope value aligned to the same sample index. */
+	uint16_t envelope;
+} __packed;
+
 /* Initialize SAADC sampling pipeline and filters. */
 int emg_sampler_init(void);
 /* Most recent decimated stream sequence number. */
@@ -31,7 +38,8 @@ uint16_t emg_sampler_get_latest_raw_u16(void);
 /* Pop one triple from the UART queue (full-rate). */
 int emg_sampler_get_uart_triple(struct emg_sample_triple *out, k_timeout_t timeout);
 /* Pop up to max_samples from the BLE stream queue. */
-uint32_t emg_sampler_pop_stream(uint32_t *first_seq, uint16_t *dst, uint32_t max_samples);
+uint32_t emg_sampler_pop_stream(uint32_t *first_seq, struct emg_stream_pair *dst,
+				uint32_t max_samples);
 /* Stream queue drop counter (decimated BLE stream). */
 uint32_t emg_sampler_get_stream_drop_count(void);
 /* Raw clip counters for low/high saturation. */

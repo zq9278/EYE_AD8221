@@ -255,14 +255,14 @@ static void notify_work_handler(struct k_work *work)
 		 */
 		static uint32_t period_end_ms;
 		static uint32_t staged_first_seq;
-		static uint16_t staged_samples[STREAM_SAMPLES_PER_PACKET];
+		static struct emg_stream_pair staged_samples[STREAM_SAMPLES_PER_PACKET];
 		static uint32_t staged_count;
 		static uint32_t staged_off;
 
 		const uint16_t mtu = bt_gatt_get_mtu(default_conn);
 		const uint16_t max_payload = (mtu > 3U) ? (mtu - 3U) : 0U;
 		const uint16_t max_samples_per_notify =
-			(max_payload > 5U) ? (uint16_t)((max_payload - 5U) / 2U) : 0U;
+			(max_payload > 5U) ? (uint16_t)((max_payload - 5U) / 4U) : 0U;
 
 		if (max_samples_per_notify == 0U) {
 			k_work_schedule(&notify_work, K_MSEC(notify_interval_ms));
@@ -290,13 +290,15 @@ static void notify_work_handler(struct k_work *work)
 		const uint32_t remaining = staged_count - staged_off;
 		const uint32_t chunk = MIN(remaining, (uint32_t)max_samples_per_notify);
 
-		uint8_t payload[5 + 2 * STREAM_SAMPLES_PER_PACKET];
+		uint8_t payload[5 + 4 * STREAM_SAMPLES_PER_PACKET];
 		const uint32_t first_seq = staged_first_seq + staged_off;
 
 		sys_put_le32(first_seq, &payload[0]);
 		payload[4] = (uint8_t)chunk;
 		for (uint32_t i = 0; i < chunk; i++) {
-			sys_put_le16(staged_samples[staged_off + i], &payload[5 + 2 * i]);
+			const struct emg_stream_pair *pair = &staged_samples[staged_off + i];
+			sys_put_le16(pair->filtered, &payload[5 + 4 * i]);
+			sys_put_le16(pair->envelope, &payload[5 + 4 * i + 2]);
 		}
 
 		stat_notify_attempts++;
@@ -317,7 +319,7 @@ static void notify_work_handler(struct k_work *work)
 		stat_notify_ok++;
 		emg_ble_stream_note_notify_ok(chunk);
 		emg_ble_stream_note_sent(first_seq + chunk - 1U,
-					 staged_samples[staged_off + chunk - 1U]);
+					 staged_samples[staged_off + chunk - 1U].filtered);
 		staged_off += chunk;
 
 		if (staged_off < staged_count) {

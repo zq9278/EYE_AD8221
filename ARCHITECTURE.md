@@ -62,7 +62,7 @@ SAADC (AIN2) -> ISR -> process_sample()
 
 BLE GATT notify (work item)
   - single sample: latest filtered
-  - stream: packetized queue
+  - stream: packetized queue (filtered + envelope pairs)
 
 UART stream thread
   - outputs binary frame per sample
